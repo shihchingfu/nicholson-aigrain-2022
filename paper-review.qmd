@@ -3,69 +3,244 @@ format: revealjs
 self-contained: true
 ---
 
+```{r}
+#| message: false
+library(mvtnorm)
+library(tsibble)
+library(tidyr)
+library(ggplot2)
+library(glue)
+
+knitr::opts_chunk$set(fig.align='center')
+
+EPS <- sqrt(.Machine$double.eps)
+RANDOM_SEED <- 2023-07-28
+
+se_kernel <- function(tau, ell) {
+  exp(-(tau/ell)^2/2)
+}
+
+cosine_kernel <- function(tau, period) {
+  cos(2*pi*tau/period)
+}
+
+qp_kernel <- function(tau, Gamma, period, ell) {
+  exp(-(tau/ell)^2/2) * exp( -Gamma*(sin(pi*tau/period))^2 )
+}
+
+qpc_kernel <- function(tau, Gamma, period, ell, f) {
+  exp(-(tau/ell)^2/2) * ( exp( -Gamma*(sin(pi*tau/period))^2 ) + f*cos(4*pi*tau/period) )
+}
+
+
+periodic_kernel <- function(tau, Gamma, period) {
+  exp( -Gamma*(sin(pi*tau/period))^2 )
+}
+
+tau_matrix <- function(n) {
+  col_index <- matrix(rep(1:n, each = n), nrow = n)
+  row_index <- t(col_index)
+  
+  abs(col_index - row_index)
+}
+
+generate_example_gp <- function(kernel_fn, n_obs = 100, n_series = 5, plot = TRUE, ...) {
+  inputs <- list(...)
+  tau <- tau_matrix(n = n_obs)
+  K <- kernel_fn(tau = tau, ...)
+  X <- 1:n_obs
+  Ys <- rmvnorm(n_series, sigma = K)
+  Ys_ts <- cbind(t = X, as.data.frame(t(Ys))) |> 
+    as_tsibble(index = t)
+  
+  Ys_ts_tidy <- pivot_longer(Ys_ts, cols = -t, names_to = "series", values_to = "y")
+
+  if (plot) {
+    
+    p <- Ys_ts_tidy |> 
+      ggplot() +
+      aes(x = t, y = y, colour = series) +
+      geom_line() +
+      labs(title = paste0(as.character(substitute(kernel_fn)), ": N = ",
+                          n_series, "; n = ", n_obs, "; ", 
+                          paste(names(inputs), inputs, sep = " = ", collapse = ", "), ".")) +
+      theme(legend.position = "none")
+    
+    return(p)
+  }
+  else {
+    invisible(Ys_ts_tidy)
+  }
+}
+```
+
 ## Paper Review
 
-<center>![https://doi.org/10.1093/mnras/stac2097](figures/title-abstract.png)</center>
+<center>![https://doi.org/10.1093/mnras/stac2097](figures/title-abstract.png){width=80%}</center>
 
 ## Summary
 
 "The primary goal of this study is to investigate, using simulated data, the extent to which this 'natural' interpretation is robust and can be used to guide modelling decisions."
 
-## Quasi-periodic Kernel
-
-- very common for stellar activity modelling
-- RVs are believed to be QP
-- QP hyperparameters have natural interpretation, e.g., rotation rates, lifetimes of active regions.
-
-- QP+cosine has power at half rotation period, c.f. RVs have power at first few harmonics.
+- Period hyperparameter, $P$, matches stellar rotation period. 
+- Timescale hyperparameter, $\ell$, matches stellar spot evolution time.
+- Harmonic complexity hyperparameter, $\Gamma$, has weak relationship with physical parameters.
+- No practical difference found between QP and QPC kernel results.
 
 
-## Methodology
+## Quasi-periodic (QP) kernel
 
-- use a simple spot model to simulate tightly sampled noiseless time-series: photometric and RV
-- model with QP or QPC GP
-- compare hyperparameters with physical parameters of simulations
-- compare photometric with RV
-- degrade RV data + white noise to see effect on hyperparameters
+- Very common for stellar activity modelling
+- Radial velocities (RVs) are believed to be quasi-periodic
+- QP hyperparameters seem to have a natural interpretation
+    - rotation rates
+    - lifetimes of active regions
 
-- uses GEORGE in python
-- uses EMCEE
-- constant mean function
+## Squared Exponential kernel
 
+$$k_\mathrm{SE}(\tau; A, \ell) = A \exp\left\{-\frac{1}{2}\left( \frac{\tau}{\ell}\right)^2\right\}$$
 
-## QP + Cosine
+```{r}
+set.seed(RANDOM_SEED)
+generate_example_gp(se_kernel, ell = 10)
+```
 
-- period half of sine term
-- power in first harmonic
+## Periodic kernel
 
+$$k_P(\tau; A, \Gamma, P) = A \exp\left\{ -\Gamma \sin^2\left[\pi \left( \frac{\tau}{P}\right) \right] \right\}$$
+```{r}
+set.seed(RANDOM_SEED)
+generate_example_gp(periodic_kernel, period = 20, Gamma = 0.5)
+```
 
-## Degeneracies in hyperparameters
+## Cosine kernel
 
-1. generate lightcurves from GP prior
-2. fit GP
-3. compare fitted with known hyperparameters
+$$k_\mathrm{C}(\tau; A, P) = A \cos\left[2\pi \left( \frac{\tau}{P}\right)\right]$$
 
-- 20 replicates
-- 100d length
-- three evenly spaced points per day
-- amplitude = 1
-- period = 2, 10, 30, 60 days
-- Gamma = 0.5, 2
-- ell = 1,3,10 x period
-
-validation of GP procedure
-
-- uniform priors on log scale (?)
-- thinning is good
-- very few burnin of 100
-- point estimate of median of posterior is used (!)
-- Used K-S test on std. residuals (D statistic) to see if normal (!!)
-
-## Simulation of lightcurves + fit QP GP
-
-- 
+```{r}
+set.seed(RANDOM_SEED)
+generate_example_gp(cosine_kernel, period = 20)
+```
 
 
-## Takeaways
+
+## Quasi-periodic (QP) kernel {.smaller}
+
+$$
+k_\mathrm{QP}(\tau; A, \Gamma, P, \ell) = k_\mathrm{P}(\tau; A, \Gamma, P) \times k_\mathrm{SE}(\tau; A, \ell) = A \exp \left[ -\Gamma \sin^2 \left(\pi \frac{\tau}{P}\right) - \frac{\tau^2}{2\ell^2}\right]
+$$
+
+```{r}
+set.seed(RANDOM_SEED)
+generate_example_gp(qp_kernel, Gamma = 0.5, period = 20, ell = 10)
+```
 
 
+## Quasi-periodic + Cosine (QPC) kernel 
+
+- Add a cosine term with a period equal to **half** of that of QP sine-squared term
+- Capture the signal at the **first harmonic** of the stellar rotation period (Perger et al. 2021)
+    - a secondary peak in the autocorrelation function seen at lag equal to half the rotation period.
+
+## Quasi-periodic + Cosine (QPC) kernel {.smaller}
+
+$$k_\mathrm{QPC}(\tau; A, \Gamma, P, \ell, f) = A \exp \left[- \frac{\tau^2}{2\ell^2}\right] \times \left( \exp \left[ -\Gamma \sin^2 \left(\pi \frac{\tau}{P}\right) \right] + f \cos\left( 4\pi\frac{\tau}{P}\right) \right)$$
+
+```{r}
+set.seed(RANDOM_SEED)
+generate_example_gp(qpc_kernel, Gamma = 0.5, period = 20, ell = 10, f = 0.2)
+```
+
+## Four Studies 
+
+1. Degeneracy of QP hyperparameters
+2. Light Curve models
+3. Radial Velocity models
+4. Effect of Downsampling
+
+## Study 1: Hyperparameter Degeneracy
+
+- Investigate the stability of Gaussian Process fitting when using QP or QPC kernels.
+- Basically can you recover the ground truth from simulated data.
+
+## Study 1: Methodology
+
+1. Simulate light curves by drawing QP hyperparameters from priors.
+2. Fit a Gaussian Process using QP kernel.
+3. Check if the recovered hyperparameters match the one drawn from prior.
+4. Repeat for QPC kernel.
+
+## Study 1: Results
+
+![](figures/figure01.png)
+
+## Study 1: K-S Test?
+
+![](figures/section2.3-ks.png)
+
+## Studies 2 & 3: Methodology
+
+1. Simulate data from a model using known physical parameters.
+2. Fit a Gaussian Process with QP kernel.
+3. Compare estimated hyperparameters with known physical parameters.
+4. Repeat with QPC kernel.
+
+- Study 2: Light curves
+- Study 3: Radial velocities
+
+## Software Used
+
+- `PySpot` (Aigrain 2021) to simulate stellar spot light curve data.
+- `george` (Ambikasaran et al. 2015) for implementing kernels.
+- `emcee` (Foreman-Mackey et al. 2013) for MCMC..
+
+## Study 2: Model vs GP
+
+![](figures/figure03.png){width=40%} ![](figures/figure04.png){width=40%}
+
+## Study 2: QP vs QPC
+
+![](figures/figure07.png){width=32%} ![](figures/figure08.png){width=32%} ![](figures/figure09.png){width=32%}
+
+## Study 3: Light Curves vs RVs
+
+![](figures/figure11.png){width=32%} ![](figures/figure12.png){width=32%} ![](figures/figure13.png){width=32%}
+
+## Study 3: QP vs QPC
+
+![](figures/figure14.png){width=32%} ![](figures/figure15.png){width=32%} ![](figures/figure16.png){width=32%}
+
+## Study 4: Effect of Downsampling
+
+- RV observations are typically ground-based and therefore more sparsely sampled and have  higher noise.
+- Methodology
+    1. Add noise to simulated RV data.
+    2. Randomly sample 50%, 20%, 10%, and 6% of the data.
+    3. Visually examine the differences.
+
+## Study 4: Results
+<center>![](figures/fig18a.png){width=50%}</center>
+
+## Study 4: Results
+<center>
+![](figures/fig18b.png){width=48%} ![](figures/fig18c.png){width=48%}
+</center>
+
+## Comments on Statistical Method
+
+- Constant mean function (?)
+- Uniform priors on log scale (?)
+- Sophisticated burnin procedure (+)
+- Thinning is good way to break serial correlation (+)
+- Point estimate of median of posterior is used (!)
+- K-S test to Normality of standardised residuals (!!)
+- Graphical justification of conclusions (+)
+
+## Takeaways for Fitting Stellar Models
+
+- Shortest gap in data points $\lt$ shortest rotation period.
+  - Rapidly rotating stars need large numbers of observations per season.
+- Sparsity increases $\rightarrow$ Timescale estimates decrease
+- Undersampling means high frequency features cannot be resolved.
+  - Good results when $\tau \gg$ sampling interval.
+- Recovery of $\Gamma$ is strongly affected by noise in data.
